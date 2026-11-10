@@ -1,0 +1,118 @@
+# ci/packages.toml — the programming build registry + sweep-feed config.
+#
+# Consumed by ci/matrix.py (build selection) and ci/sweep/sweep.py (version
+# sweep). One table per package; **a package without an entry is not built**.
+# The specs themselves live in pkgs/<pkg>/<pkg>.spec.
+#
+# Batches are dependency levels, not parallel groups within one job:
+# copr-build.yml submits the waves sequentially and waits for each wave's
+# Copr builds before the next — each successful build is immediately visible
+# to the project repo, so a package may rely on anything built in a lower
+# batch. Packages inside one batch must therefore never depend on each other.
+#
+# batch 0  packages with no registry-package BuildRequires
+# The [pkg.updates] table drives the version sweep (update.yml) and is
+# required for every package — sweep.py --check enforces it:
+#   feed = "github-release"  + repo = "owner/name"   latest GitHub release tag
+#   feed = "github-tag"      + repo = "owner/name"   newest git tag
+#   feed = "custom"          + custom = "<name>"     ci/sweep/custom.py function
+
+# --------------------------------------------------------------- zig toolchains
+
+# zig015: Zig 0.15 compiler and toolchain (signed upstream archive)
+[zig015]
+batch = 0
+
+[zig015.updates]
+feed = "custom"
+custom = "zig015"
+
+# zig017: Zig 0.17 compiler and toolchain (signed upstream archive)
+[zig017]
+batch = 0
+
+[zig017.updates]
+feed = "custom"
+custom = "zig017"
+
+# --------------------------------------------------------------- python tools
+
+# ty: Astral's fast Python type checker (binary rewrap from GitHub releases)
+[ty]
+batch = 0
+
+[ty.updates]
+feed = "custom"
+custom = "ty"
+
+# ruff: Astral's fast Python linter and formatter (binary rewrap from GitHub releases)
+[ruff]
+batch = 0
+
+[ruff.updates]
+feed = "custom"
+custom = "ruff"
+
+# pyrefly: Meta's fast Python type checker (binary rewrap from GitHub releases)
+[pyrefly]
+batch = 0
+
+[pyrefly.updates]
+feed = "custom"
+custom = "pyrefly"
+
+# uv: Astral's fast Python package manager (binary rewrap from GitHub releases)
+[uv]
+batch = 0
+
+[uv.updates]
+feed = "custom"
+custom = "uv"
+
+# --------------------------------------------------------------- version managers
+
+# asdf: Extendable version manager (Go source build)
+[asdf]
+batch = 0
+
+[asdf.updates]
+feed = "github-release"
+repo = "asdf-vm/asdf"
+
+# pixi: Cross-platform package manager (binary rewrap from GitHub releases)
+[pixi]
+batch = 0
+
+[pixi.updates]
+feed = "custom"
+custom = "pixi"
+
+# --------------------------------------------------------------- javascript tooling
+
+# bun: Fast JavaScript runtime (binary rewrap from GitHub releases)
+[bun]
+batch = 0
+
+[bun.updates]
+feed = "custom"
+custom = "bun"
+
+# --------------------------------------------------------------- markdown tools
+
+# marksman: Markdown LSP server (binary rewrap from GitHub releases)
+[marksman]
+batch = 0
+
+[marksman.updates]
+feed = "custom"
+custom = "marksman"
+
+# --------------------------------------------------------------- language servers
+
+# texlab: LaTeX LSP (Rust source build)
+[texlab]
+batch = 0
+
+[texlab.updates]
+feed = "custom"
+custom = "texlab"

@@ -1,0 +1,158 @@
+# AGENTS.md
+
+RPM package repo for **halcyon programming tools** — one of the halcyon group
+repositories (base-pkgs, cli-tools, applications, fonts, texlive-packages,
+linux-p03, programming; each has its own GitHub repo under
+[halcyon-linux](https://github.com/orgs/halcyon-linux/repositories) and its
+own Copr project under `aahsnr-work`). Built on Fedora Copr
+([aahsnr-work/programming](https://copr.fedorainfracloud.org/coprs/aahsnr-work/programming/),
+chroots fedora-44-x86_64 + fedora-45-x86_64) in CI. The repo carries only
+specs, the registry, the version sweeper and the workflows; Copr owns the
+build farm, the GPG signing and the repo hosting. Consumers:
+
+```
+dnf copr enable aahsnr-work/programming fedora-44
+```
+
+Fedora 44 is the target; the fc45 chroot exists so closure and build
+breakage surfaces one release early.
+
+**The Copr repos are consumed by the custom atomic OCI image, not by a
+desktop install.** Every halcyon Copr repo (this one and the sibling
+group repos) exists to feed packages into that image build. A machine with
+the halcyon repos *disabled* in `/etc/yum.repos.d/` — `enabled=0`, so the
+repo contributes nothing and `dnf` reports the group as empty — is
+therefore **by design, not a misconfiguration**: do not "fix" it, do not
+treat a disabled or empty halcyon Copr repo as a missing/broken package
+source, and do not enable the repos to make a local `dnf` query work. Use
+`dnf repoquery --repoid=...` against the enabled-by-url repo or the Copr
+web UI when a package's published state has to be checked, and treat
+"the repo is not enabled locally" as a fact about the consumer, not about
+the package.
+
+**Markdown discipline**: do NOT read, use, or act on `TODO.md`, `notes/` or
+any other markdown file unless the user explicitly instructs you to utilize
+that particular markdown file for the task at hand. Code, the registry
+(`ci/packages.toml`), and the workflows are the source of truth.
+
+## Commands
+
+There is a small unit-test suite for the CI helpers; the specs themselves
+are verified by the Copr build going green.
+
+```bash
+# registry consistency + build plan (what CI's validate job runs)
+python3 ci/matrix.py --list
+python3 ci/matrix.py --list --since <sha>   # what a push would rebuild
+python3 ci/sweep/sweep.py --check           # every package has a feed; no dead feeds
+python3 ci/specs.py --check                # the spec conventions below, mechanically
+
+# the CI helpers' unit tests (stdlib unittest, no dependencies)
+python3 -m unittest discover -s ci/tests -t .
+
+# submit ONE package to Copr (what copr-build.yml's submit jobs do;
+# rpmbuild/spectool/cop-cli: run inside the CI image or a fedora:44 container)
+spectool -g -C _srpms/<pkg> pkgs/<pkg>/<pkg>.spec
+rpmbuild -bs --define "_sourcedir $PWD/_srpms/<pkg>" \
+         --define "_srcrpmdir $PWD/_srpms" \
+         --define "_specdir $PWD/pkgs/<pkg>" pkgs/<pkg>/<pkg>.spec
+copr-cli build --nowait programming _srpms/<pkg>-*.src.rpm
+
+# the version sweep (update.yml)
+GITHUB_TOKEN=$(gh auth token) python3 ci/sweep/sweep.py [--pkg <name>]
+
+# a mock buildroot identical to Copr's, for debugging a failed build locally
+copr-cli mock-config aahsnr-work/programming fedora-44-x86_64 > /tmp/copr.cfg
+mock -r /tmp/copr.cfg <srpm>
+```
+
+## Non-obvious rules
+
+- **A package without a `ci/packages.toml` entry is never built** — the
+  registry is the build selection AND the sweep-feed config. Adding a
+  package = 2 files: `pkgs/<pkg>/<pkg>.spec` (start from
+  `templates/*.spec.tmpl`) and the registry entry (`batch` +
+  `[pkg.updates]` feed).
+- **Batches are dependency levels**: a package's `batch` must be >= 1 + the
+  highest batch of anything it BuildRequires. Packages within one batch
+  submit in parallel and must never depend on each other. `copr-build.yml`
+  submits wave-by-wave — each successful build is immediately visible to
+  the project repo, which is how batch N+1 installs batch N's output as
+  BuildRequires. `ci/matrix.py` enforces the invariant (the validate job
+  runs it).
+- **A push to `main` rebuilds changed packages plus every higher batch**
+  (wave-submitted). Push cascades are additionally gated on the
+  CASCADE_ENABLED repository variable (kill-switch — set it to `false` to
+  stop automatic cascades; `workflow_dispatch` bypasses it). PRs run
+  validation only.
+- copr-build.yml carries exactly the wave pairs the registry populates,
+  chained in ascending batch order (empty batch levels are collapsed,
+  not kept). Dropping a package into an EXISTING batch needs no workflow
+  change; a package at a NEW batch level needs its submitN/waitN pair
+  added first — copy the previous populated pair, renumber, and chain it
+  after that wave — or the manifest would emit a wave with no job to
+  submit it.
+- Touching `ci/**`, `.github/builder/**` or the build workflow itself makes
+  `ci/matrix.py` rebuild _every_ package in this repo (`INFRA_PREFIXES`).
+  A change that touches no build input at all (docs, templates) rebuilds
+  nothing — the old "no package changed means rebuild everything" rule was a
+  safety net for a repo that had no registry yet.
+- **Version bumps are automatic** (`update.yml`, weekly Monday floor +
+  chained after every cascade): `ci/sweep/sweep.py` reads each package's
+  `[pkg.updates]` table (`feed = "github-release" | "github-tag" |
+  "custom"` + `repo`) and edits specs in place (Release resets only on a
+  real version change; a sweep that changes anything else — a pinned
+  upstream build id, a checksum — bumps the Release instead, so the
+  rebuilt RPM never carries the NVR of the one already published; file
+  written only on content change). Custom feeds live in
+  `ci/sweep/custom.py`. Default mode commits bumps straight to
+  main (self-healing: a failed build leaves the published version
+  untouched); set the `UPDATE_MODE` repo variable to `pr` for a review
+  gate.
+- **Spec conventions** (terra-style, differ from Fedora defaults). They are
+  enforced mechanically by `ci/specs.py --check` (the validate job runs it)
+  and, for what only rpm can see, by the `spec-lint` job (`rpmspec --parse`
+  every spec in the builder image):
+  - full URLs in `Source*` entries — the submit job's `spectool -g`
+    fetches them before `rpmbuild -bs`; keep downloads out of `%prep`.
+    A non-URL `Source*`/`Patch*` must be a file that exists in the package
+    directory.
+  - explicit `Release: N%{?dist}` + a written `%changelog` — no
+    rpmautospec/`%autorelease`.
+  - **never mention macros textually in comments** — rpm expands macros
+    inside comments too: a `%global`/`%define` there is a hard parse
+    error, `%autosetup`/`%configure` are hard parse errors as well, and
+    anything else silently rewrites the comment (the packaged spec then
+    carries an expanded build path). Write `%%` to mention a macro.
+  - build-time repos outside Fedora/Terra go in the **Copr chroot's repo
+    list** (`copr-cli edit-chroot aahsnr-work/programming/fedora-44-x86_64
+    --repos …`), not the spec. Configured: Terra 44 and the
+    `lionheartp/Hyprland` lowest-priority bootstrap.
+  - _no debug packages_ — every spec carries the debug_package nil define;
+    nothing in the halcyon image consumes debug packages.
+  - **vendor rewraps** are only allowed when upstream itself ships an RPM
+    or a self-contained release archive; anything else is a source build.
+    A foreign binary tree needs the full nil set (debug_package nil,
+    _build_id_links none, __os_install_post nil) — an empty debugsource
+    file list fails the build, and Copr's brp hooks (shebang mangler,
+    check-rpaths, /usr/lib/.build-id links) hard-fail what older
+    buildroots let pass. Do not remove those defines.
+  - never use forgeautosetup/forgemeta without defining the forgemeta
+    state — the archive dir name derives wrong. Use plain
+    `%autosetup -n <archive-dir>`.
+  - validate a spec against the UPSTREAM tarball, not from memory:
+    release layouts drift (completions dirs get renamed, changelogs
+    dropped).
+  - `install -t DIR SRC` keeps SRC's basename — `%files` must claim the
+    name as installed. Prefer explicit
+    `install -Dm644 SRC %{buildroot}%{dir}/NAME`.
+  - never list a file twice: `%files` with a directory glob AND a file
+    inside it makes rpm warn "File listed twice" — own the directory with
+    `%dir` and the file separately.
+- `repo/` carries this project's consumer drop-in (`programming.repo`);
+  repoclosure installs it (plus Terra and the lionheartp bootstrap,
+  written inline) and checks the published repo against that view.
+- **CI authentication**: the `COPR_CLICONF` GitHub secret drives every
+  copr-cli step. The Copr API token expires — a wave of 401s in
+  copr-build.yml means: regenerate at
+  <https://copr.fedorainfracloud.org/api/>, re-set the secret, re-run.
